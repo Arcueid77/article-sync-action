@@ -6,7 +6,7 @@
 
 Source-controlled article publishing and updates for GitHub Actions. The first adapter supports Zhihu. No local browser extension or runtime LLM is required.
 
-**当前范围：知乎，Ubuntu GitHub 托管 Runner。** 使用 Node.js 22 和 Playwright；不调用知乎 CLI。公众号、B 站等适配器尚未实现。
+**当前范围：知乎，Ubuntu 24.04 GitHub 托管 Runner。** 使用 Node.js 22 和 Playwright；不调用知乎 CLI。公众号、B 站等适配器尚未实现。
 
 ## 已有能力
 
@@ -41,9 +41,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: Arcueid77/article-sync-action@main
