@@ -1,0 +1,39 @@
+name: Sync articles after deployment
+on:
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: article-sync-zhihu
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == github.event.repository.default_branch && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Skip stale deployment events
+        id: fresh
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: context.payload.workflow_run.workflow_id,
+              branch: context.payload.repository.default_branch,
+              status: 'success', per_page: 1
+            });
+            core.setOutput('current', String(data.workflow_runs[0]?.id === context.payload.workflow_run.id));
+      - uses: Arcueid77/article-sync-action@main
+        if: steps.fresh.outputs.current == 'true'
+        with:
+          mode: apply
+          expected-sha: ${{ github.event.workflow_run.head_sha }}
+          zhihu-storage-state: ${{ secrets.ZHIHU_STORAGE_STATE }}
+          github-token: ${{ github.token }}

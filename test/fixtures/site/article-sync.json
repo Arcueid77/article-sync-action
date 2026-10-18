@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "blogUrl": "https://blog.example",
+  "authorUrlToken": "fixture-author",
+  "assetHosts": [
+    "blog.example",
+    "raw.githubusercontent.com"
+  ],
+  "source": {
+    "seriesTitle": "hex"
+  },
+  "columns": {
+    "series": {
+      "id": "c_12345",
+      "title": "Example series"
+    }
+  },
+  "articles": {
+    "series-00": {
+      "id": "10000000000000000001",
+      "column": "series",
+      "published": true,
+      "enabled": true
+    },
+    "series-01": {
+      "id": "10000000000000000002",
+      "column": "series",
+      "published": true,
+      "enabled": true
+    },
+    "series-02": {
+      "id": "10000000000000000003",
+      "column": "series",
+      "published": true,
+      "enabled": true
+    },
+    "series-03": {
+      "id": "10000000000000000004",
+      "column": "series",
+      "published": true,
+      "enabled": true
+    },
+    "diagrams": {
+      "id": "10000000000000000005",
+      "published": true,
+      "enabled": true
+    }
+  }
+}

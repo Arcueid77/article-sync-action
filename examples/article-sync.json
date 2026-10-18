@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "blogUrl": "https://blog.example",
+  "authorUrlToken": "your-zhihu-profile-token",
+  "source": {
+    "articlesDir": "posts",
+    "publicDir": "public",
+    "assetDirs": ["posts", "public"],
+    "articlePath": "/blog/",
+    "seriesPath": "/series/",
+    "seriesTitle": "plain"
+  },
+  "assetHosts": [],
+  "richTableMode": "rows",
+  "columns": {},
+  "articles": {},
+  "newArticles": {
+    "enabled": true,
+    "stateBranch": "dev/article-sync-state",
+    "seriesColumns": {},
+    "declaration": "无声明"
+  }
+}

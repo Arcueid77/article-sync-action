@@ -1,0 +1,78 @@
+name: Article Sync
+description: Publish and update source-controlled Markdown articles on Zhihu, with format verification and persistent IDs.
+author: Arcueid77
+branding:
+  icon: repeat
+  color: blue
+inputs:
+  mode:
+    description: plan (offline preview), verify, or apply (publish/update).
+    default: plan
+  article:
+    description: A Markdown filename slug, or all.
+    default: all
+  source-root:
+    description: Source checkout directory relative to GITHUB_WORKSPACE.
+    default: .
+  config:
+    description: Configuration path relative to source-root.
+    default: article-sync.json
+  expected-sha:
+    description: Optional full commit SHA that must match the source checkout.
+  zhihu-storage-state:
+    description: Dedicated Zhihu session JSON from an Actions Secret. Unused in plan mode.
+  github-token:
+    description: Token with contents write permission for the dedicated state branch. Unused in plan mode.
+  upload-artifacts:
+    description: Upload sanitized previews and validation reports.
+    default: 'true'
+outputs:
+  output-directory:
+    description: Directory containing sanitized previews and reports.
+    value: ${{ steps.sync.outputs.output-directory }}
+  report:
+    description: Absolute path to report.json.
+    value: ${{ steps.sync.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Install pinned dependencies
+      shell: bash
+      env:
+        ARTICLE_SYNC_ACTION_PATH: ${{ github.action_path }}
+      run: npm ci --prefix "$ARTICLE_SYNC_ACTION_PATH" --ignore-scripts --no-audit --no-fund
+    - name: Install CJK fonts
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y fonts-noto-cjk
+    - name: Install Chromium
+      if: inputs.mode != 'plan'
+      shell: bash
+      env:
+        ARTICLE_SYNC_ACTION_PATH: ${{ github.action_path }}
+      run: node "$ARTICLE_SYNC_ACTION_PATH/node_modules/playwright/cli.js" install --with-deps chromium
+    - name: Synchronize articles
+      id: sync
+      shell: bash
+      env:
+        ARTICLE_SYNC_ACTION_PATH: ${{ github.action_path }}
+        SYNC_MODE: ${{ inputs.mode }}
+        SYNC_ARTICLE: ${{ inputs.article }}
+        SYNC_SOURCE_ROOT: ${{ inputs.source-root }}
+        SYNC_CONFIG: ${{ inputs.config }}
+        SYNC_EXPECTED_SHA: ${{ inputs.expected-sha }}
+        ZHIHU_STORAGE_STATE: ${{ inputs.mode != 'plan' && inputs.zhihu-storage-state || '' }}
+        GITHUB_TOKEN: ${{ inputs.mode != 'plan' && inputs.github-token || '' }}
+      run: node "$ARTICLE_SYNC_ACTION_PATH/src/action.mjs"
+    - name: Upload sanitized evidence
+      if: always() && inputs.upload-artifacts == 'true' && steps.sync.outputs.output-directory != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: article-sync-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ steps.sync.outputs.output-directory }}
+        if-no-files-found: ignore
+        retention-days: 14

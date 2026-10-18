@@ -1,0 +1,11 @@
+node_modules/
+.local/
+output/
+.auth/
+storage-state*.json
+*.log
+.env*
+!.env.example
+*.pem
+*.key
+.DS_Store

@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [main, 'dev/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - run: npm run test:browser
+      - name: Exercise the public Action without credentials
+        uses: ./
+        with:
+          mode: plan
+          source-root: examples
+      - run: git diff --exit-code
