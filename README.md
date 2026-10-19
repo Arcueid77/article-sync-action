@@ -74,6 +74,7 @@ jobs:
 | `columns` / `newArticles.seriesColumns` | 系列和知乎专栏映射；有系列的文章必须明确映射 |
 | `newArticles.enabled` | 是否允许新建未绑定的正式文章 |
 | `newArticles.stateBranch` | 独立状态分支，例如 `dev/article-sync-state` |
+| `newArticles.stateFile` | 可选状态文件名，默认 `article-sync-state.json`；迁移已有工具时指定原文件名，保留全部 ID 和图片记录 |
 | `newArticles.declaration` | 新文声明，明确选择 `无声明` 或 `包含 AI 辅助创作 作者对内容负责` |
 
 Astro 示例：`articlesDir: blog/src/content/blog`、`publicDir: blog/public`、`assetDirs: [blog/public, blog/src/assets, blog/src/content/blog]`。

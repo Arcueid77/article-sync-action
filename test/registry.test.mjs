@@ -87,3 +87,23 @@ test('registry conflicts or transport errors stop without exposing credentials o
     await assert.rejects(store.load(), error => ['REGISTRY_CONFLICT', 'REGISTRY_UNAVAILABLE'].includes(error.code) && !/test-secret|sensitive/.test(error.message));
   }
 });
+
+test('an existing deployment keeps its legacy state filename, IDs and compare-and-swap revision', async () => {
+  const legacy = { ...config, newArticles: { ...config.newArticles, stateFile: 'zhihu-sync-state.json' } };
+  const registry = { ...emptyRegistry(legacy), articles: { new: entry('published') } };
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('/git/ref/heads/')) return Response.json({ object: { sha: 'a'.repeat(40) } });
+    assert.ok(url.includes('/contents/zhihu-sync-state.json'));
+    if (options.method === 'GET') return Response.json({ type: 'file', encoding: 'base64', sha: 'b'.repeat(40), content: Buffer.from(JSON.stringify(registry)).toString('base64') });
+    assert.equal(JSON.parse(options.body).sha, 'b'.repeat(40));
+    return Response.json({ content: { sha: 'c'.repeat(40) } });
+  };
+  const store = new GitHubRegistry(legacy, { repository: 'owner/repo', token: 'test-secret', fetchImpl });
+  const loaded = await store.load();
+  assert.equal(loaded.articles.new.id, entry().id);
+  await store.save(loaded);
+  assert.equal(calls.some(call => call.options.method === 'POST'), false);
+  assert.throws(() => new GitHubRegistry({ ...legacy, newArticles: { ...legacy.newArticles, stateFile: '../state.json' } }, { repository: 'owner/repo', token: 'test-secret' }), { code: 'CONFIG_INVALID' });
+});

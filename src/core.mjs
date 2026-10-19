@@ -35,6 +35,7 @@ export function validateConfig(config) {
   if (config.richTableMode !== undefined && !['rows', 'notes'].includes(config.richTableMode)) fail('CONFIG_INVALID', 'Unsupported rich table conversion mode.');
   if (config.newArticles) {
     if (typeof config.newArticles.enabled !== 'boolean' || !/^dev\/[a-z0-9-]+$/.test(config.newArticles.stateBranch ?? '')) fail('CONFIG_INVALID', 'New articles require an explicit setting and dedicated state branch.');
+    if (config.newArticles.stateFile !== undefined && !/^[a-z][a-z0-9-]*\.json$/.test(config.newArticles.stateFile)) fail('CONFIG_INVALID', 'The state filename must be a plain JSON basename.');
     for (const [series, column] of Object.entries(config.newArticles.seriesColumns ?? {})) if (!/^[a-z0-9-]+$/.test(series) || !config.columns[column]) fail('CONFIG_INVALID', 'New article series needs a configured column.');
     if (!['无声明', '包含 AI 辅助创作 作者对内容负责'].includes(config.newArticles.declaration)) fail('CONFIG_INVALID', 'New article creation statement must be explicit.');
   }

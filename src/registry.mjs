@@ -59,7 +59,9 @@ export class GitHubRegistry {
   constructor(config, { repository, token, branch = config.newArticles?.stateBranch, fetchImpl = fetch } = {}) {
     if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repository ?? '') || !token || !/^dev\/[a-z0-9-]+$/.test(branch ?? '')) fail('REGISTRY_REQUIRED', 'The trusted repository, token and dedicated state branch are required.');
     this.config = config; this.repository = repository; this.token = token; this.branch = branch; this.fetch = fetchImpl;
-    this.file = 'article-sync-state.json'; this.sha = null; this.branchExists = false;
+    this.file = config.newArticles?.stateFile ?? 'article-sync-state.json';
+    if (!/^[a-z][a-z0-9-]*\.json$/.test(this.file)) fail('CONFIG_INVALID', 'The state filename must be a plain JSON basename.');
+    this.sha = null; this.branchExists = false;
   }
   async request(method, endpoint, body, allowMissing = false) {
     let response;

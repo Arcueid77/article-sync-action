@@ -33,7 +33,7 @@ export function publishedArticle(data, prepared, { legacyNoDeclaration = false }
   const omittedDeclaration = !Object.hasOwn(data, 'creation_disclaimer');
   if ((omittedDeclaration && !legacyNoDeclaration) || (!omittedDeclaration && data.creation_disclaimer !== null && typeof data.creation_disclaimer !== 'string')) fail('WEBSITE_ARTICLE_INVALID', 'The published creation statement is unavailable.');
   const columns = Array.isArray(data.column) ? data.column : data.column ? [data.column] : [];
-  if ((data.column == null && data.has_column !== false) || (data.has_column === false && columns.length)) fail('EDITOR_METADATA_INVALID', 'The published column membership is unavailable or contradictory.');
+  if ((data.column == null && data.has_column !== false) || (data.has_column === false && columns.length) || (data.has_column === true && !columns.length)) fail('EDITOR_METADATA_INVALID', 'The published column membership is unavailable or contradictory.');
   const settings = editorMetadata({
     ...data,
     column: columns,
@@ -43,3 +43,4 @@ export function publishedArticle(data, prepared, { legacyNoDeclaration = false }
   }, prepared);
   return { title: data.title, html: data.content, ...settings, ...(omittedDeclaration ? { declarationReadSource: 'editor-confirmed-absence' } : {}), readSource: 'website-article', publishedUpdated: Number.isSafeInteger(data.updated) ? data.updated : null };
 }
+
