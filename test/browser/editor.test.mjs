@@ -94,6 +94,7 @@ async function fixture(options = {}) {
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1') return route.continue();
+    if (url.pathname.includes('expired')) return route.fulfill({ status: 403, body: 'expired image' });
     if (url.hostname === 'api.zhihu.com') return route.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ status: 'success', src: options.privateImages ? privateImage : cdn, original_src: options.privateImages ? privateImage : cdn }) });
     if (url.hostname.endsWith('.zhimg.com') || url.hostname === 'pic-private.zhihu.com') return route.fulfill({ contentType: 'image/png', body: png });
     return route.abort();
@@ -185,6 +186,65 @@ test('an image visible only to the owner cannot count as a successful public art
     const prepared = { ...f.prepared, column: undefined, html: body + '<img src="https://asset.invalid/asset-0">' };
     const result = await f.adapter.runNew(prepared, [{ key: 'asset-0', hash: sha256(png), file }], { images: {}, references: {} }, { mode: 'apply', outputDirectory: f.directory, declaration: '包含 AI 辅助创作 作者对内容负责', onBeforeSubmit: async () => {} });
     assert.equal(result.code, 'PUBLIC_VERIFY_FAILED', JSON.stringify(result)); assert.equal(result.submitted, true); assert.equal(f.state.updates, 1);
+  } finally { await f.close(); }
+});
+
+test('existing updates verify anonymous images and never resubmit after public verification fails', async () => {
+  for (const ownerOnlyImages of [false, true]) {
+    const f = await fixture({ popupUpload: true, privateImages: true, ownerOnlyImages, blockPublic: true, publishSavedDraft: true });
+    try {
+      const file = path.join(f.directory, 'asset.png'); await fs.writeFile(file, png);
+      const prepared = { ...f.prepared, html: body + '<img src="https://asset.invalid/asset-0">' };
+      const result = await f.adapter.run(prepared, [{ key: 'asset-0', hash: sha256(png), file }], { images: {}, references: {} }, { mode: 'apply', outputDirectory: f.directory });
+      assert.equal(result.status, ownerOnlyImages ? 'failed' : 'updated', JSON.stringify(result));
+      if (ownerOnlyImages) { assert.equal(result.code, 'PUBLIC_VERIFY_FAILED'); assert.equal(result.submitted, true); }
+      const validation = JSON.parse(await fs.readFile(path.join(f.directory, 'validation.json'), 'utf8'));
+      assert.equal(validation.checks.publicImages, !ownerOnlyImages);
+      assert.equal(f.state.updates, 1); assert.equal(f.state.uploads, 1);
+    } finally { await f.close(); }
+  }
+});
+
+test('anonymous verification errors preserve update uncertainty without a second submit', async () => {
+  const f = await fixture();
+  try {
+    let checks = 0;
+    f.adapter.publicImagesLoad = async () => { checks++; throw new Error('test context failure'); };
+    const result = await f.adapter.run(f.prepared, [], { images: {} }, { mode: 'apply', outputDirectory: f.directory });
+    assert.equal(result.code, 'WRITE_OUTCOME_UNKNOWN', JSON.stringify(result));
+    assert.equal(result.submitted, true); assert.equal(f.state.updates, 1); assert.equal(checks, 3);
+  } finally { await f.close(); }
+});
+
+test('contradictory empty published columns stop an existing update before editing', async () => {
+  const f = await fixture({ publishedHasColumn: true });
+  try {
+    f.state.columns = [];
+    const result = await f.adapter.run({ ...f.prepared, column: undefined }, [], { images: {} }, { mode: 'apply', outputDirectory: f.directory });
+    assert.equal(result.code, 'EDITOR_METADATA_INVALID'); assert.equal(result.submitted, false);
+    assert.equal(result.draftChanged, false); assert.equal(f.state.updates, 0); assert.equal(f.state.draft, null);
+  } finally { await f.close(); }
+});
+
+test('expired hash-only image caches stay read-only in verify and repair with one upload in apply', async () => {
+  const f = await fixture();
+  try {
+    const expired = 'https://pic1.zhimg.com/v2-aabbccdd_expired.png';
+    f.state.html = body + `<img src="${expired}">`;
+    const file = path.join(f.directory, 'asset.png'); await fs.writeFile(file, png);
+    const hash = sha256(png);
+    const assets = [{ key: 'asset-0', hash, file }];
+    const prepared = { ...f.prepared, html: body + '<img src="https://asset.invalid/asset-0">' };
+    const cache = { images: { [hash]: expired }, references: { [hash]: { imageHash: 'v2-aabbccdd' } } };
+    const verify = await f.adapter.run(prepared, assets, cache, { mode: 'verify', outputDirectory: path.join(f.directory, 'verify') });
+    assert.equal(verify.status, 'assets_pending', JSON.stringify(verify));
+    assert.equal(f.state.updates, 0); assert.equal(f.state.uploads, 0); assert.equal(f.state.draft, null);
+    const apply = await f.adapter.run(prepared, assets, cache, { mode: 'apply', outputDirectory: path.join(f.directory, 'apply') });
+    assert.equal(apply.status, 'updated', JSON.stringify(apply));
+    assert.equal(apply.validation.checks.publicImages, true);
+    assert.equal(f.state.updates, 1); assert.equal(f.state.uploads, 1); assert.equal(cache.images[hash], cdn);
+    const again = await f.adapter.run(prepared, assets, cache, { mode: 'apply', outputDirectory: path.join(f.directory, 'again') });
+    assert.equal(again.status, 'already_current'); assert.equal(f.state.updates, 1); assert.equal(f.state.uploads, 1);
   } finally { await f.close(); }
 });
 
@@ -393,4 +453,25 @@ test('website rate limiting stops before editing and does not fall back to a dra
     assert.equal(f.state.draft, null);
     assert.equal(f.state.updates, 0);
   } finally { await f.close(); }
+});
+
+
+test('leading quotes do not leak into replacement subtitles, including later updates', async () => {
+  for (const initialHtml of [body, '<blockquote><p>旧引用</p></blockquote>', '<blockquote><blockquote><p>嵌套旧引用</p></blockquote></blockquote>']) {
+    const f = await fixture();
+    try {
+      f.state.html = initialHtml;
+      const cache = { images: {} };
+      const first = await f.adapter.run(f.prepared, [], cache, { mode: 'apply', outputDirectory: path.join(f.directory, 'first') });
+      assert.equal(first.status, 'updated', JSON.stringify(first));
+      assert.equal(first.validation.ok, true); assert.equal(first.validation.checks.subtitles, true);
+      const changed = { ...f.prepared, html: body.replace('副标题', '修订后的副标题') };
+      const second = await f.adapter.run(changed, [], cache, { mode: 'apply', outputDirectory: path.join(f.directory, 'second') });
+      assert.equal(second.status, 'updated', JSON.stringify(second));
+      assert.equal(second.validation.ok, true); assert.equal(second.validation.checks.subtitles, true);
+      assert.equal(f.state.updates, 2);
+      const again = await f.adapter.run(changed, [], cache, { mode: 'apply', outputDirectory: path.join(f.directory, 'again') });
+      assert.equal(again.status, 'already_current', JSON.stringify(again)); assert.equal(f.state.updates, 2);
+    } finally { await f.close(); }
+  }
 });

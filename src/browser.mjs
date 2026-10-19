@@ -18,6 +18,16 @@ async function loadImages(page, rootSelector) {
   return page.locator(`${rootSelector} img`).evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0));
 }
 
+async function loadImageUrls(page, urls) {
+  return page.evaluate(async urls => (await Promise.all(urls.map(url => new Promise(resolve => {
+    const image = new Image();
+    const timer = setTimeout(() => resolve(false), 20_000);
+    image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); };
+    image.onerror = () => { clearTimeout(timer); resolve(false); };
+    image.src = url;
+  })))).every(Boolean), urls);
+}
+
 export async function readStorageState(file) {
   let state;
   try { state = JSON.parse(await fs.readFile(file, 'utf8')); } catch { fail('AUTH_STATE_INVALID', 'The authentication state file is missing or invalid.'); }
@@ -118,13 +128,7 @@ export class ZhihuEditor {
     if (article.declarationReadSource && article.declaration !== controls.metadata.declaration) fail('EDITOR_METADATA_INVALID', 'The editor and published creation statement disagree.');
     const imageUrls = describeHtml(article.html).images;
     if (!imageUrls.every(isZhihuImage)) fail('PUBLISHED_IMAGE_INVALID', 'Published body images must use Zhihu CDN URLs.');
-    const imagesLoaded = await page.evaluate(async urls => (await Promise.all(urls.map(url => new Promise(resolve => {
-      const image = new Image();
-      const timer = setTimeout(() => resolve(false), 20_000);
-      image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); };
-      image.onerror = () => { clearTimeout(timer); resolve(false); };
-      image.src = url;
-    })))).every(Boolean), imageUrls);
+    const imagesLoaded = await loadImageUrls(page, imageUrls);
     return { ...article, imageUrls, imagesLoaded };
   }
 
@@ -260,15 +264,13 @@ export class ZhihuEditor {
         }
       } catch { /* Reuse only a freshly acknowledged address. */ }
     }
-    if (existing) { this.rememberImage(cache, asset, existing, reference); return existing; }
-    const cached = cache.images[asset.hash];
-    if (isZhihuImage(cached)) {
-      try {
-        const response = await this.context.request.get(cached, { timeout: 15_000 });
-        const valid = response.ok() && response.headers()['content-type']?.startsWith('image/');
-        await response.dispose();
-        if (valid) { this.rememberImage(cache, asset, cached, reference); return cached; }
-      } catch { /* A stale runtime address is not persisted or reused. */ }
+    // Saved drafts have no imagesLoaded flag, and a published image may be stale.
+    // Decode each candidate before reuse; otherwise let apply upload the asset once.
+    for (const candidate of new Set([existing, cache.images[asset.hash]].filter(isZhihuImage))) {
+      if (await loadImageUrls(page, [candidate])) {
+        this.rememberImage(cache, asset, candidate, reference);
+        return candidate;
+      }
     }
     return null;
   }
@@ -287,13 +289,7 @@ export class ZhihuEditor {
     const context = await this.anonymousContextFactory({ storageState: { cookies: [], origins: [] } });
     try {
       const page = await context.newPage();
-      return await page.evaluate(async urls => (await Promise.all(urls.map(url => new Promise(resolve => {
-        const image = new Image();
-        const timer = setTimeout(() => resolve(false), 20_000);
-        image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); };
-        image.onerror = () => { clearTimeout(timer); resolve(false); };
-        image.src = url;
-      })))).every(Boolean), urls);
+      return await loadImageUrls(page, urls);
     } finally { await context.close(); }
   }
 
@@ -325,6 +321,20 @@ export class ZhihuEditor {
     // Deleting an image selection may detach the selection's anchor while the
     // editing host stays focused. Establish a fresh insertion point before paste.
     await controls.body.click();
+    for (let quotes = await controls.body.locator('blockquote').count(); quotes; quotes = await controls.body.locator('blockquote').count()) {
+      // Select All + Backspace can retain an empty quote block. Pasting into it
+      // inherits/nests that quote instead of preserving the prepared subtitle.
+      // Use the editor's native empty-block deletion, never mutate its DOM.
+      await controls.body.press('ControlOrMeta+Home');
+      await controls.body.press('Backspace');
+      // Each step must reduce the quote count, bounding nested-quote cleanup.
+      await page.waitForFunction(previousQuotes => {
+        const editor = document.querySelector('[contenteditable="true"][role="textbox"]');
+        return editor && editor.querySelectorAll('blockquote').length < previousQuotes && !editor.querySelector('img') && !editor.textContent.replace(/[\s\u200B-\u200D\uFEFF]/gu, '');
+      }, quotes, { timeout: 5000 });
+      // Deleting the remaining quote may detach the selection again.
+      await controls.body.click();
+    }
     await controls.body.press('ControlOrMeta+V');
     } finally {
       // The paste event has captured its HTML; do not retain signed image URLs.
@@ -533,6 +543,10 @@ export class ZhihuEditor {
           validation = compareArticle(expected, published);
           validation.checks.metadata = sameMetadata(original, published);
           validation.ok = Object.values(validation.checks).every(Boolean);
+          if (validation.ok) {
+            validation.checks.publicImages = await this.publicImagesLoad(published.imageUrls);
+            validation.ok = Object.values(validation.checks).every(Boolean);
+          }
           await writeJson(path.join(outputDirectory, 'after.json'), published);
           await writeJson(path.join(outputDirectory, 'validation.json'), validation);
           if (validation.ok) {

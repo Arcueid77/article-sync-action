@@ -70,6 +70,17 @@ test('ordinary published articles need explicit evidence when the column is omit
   assert.throws(() => publishedArticle(data, prepared), { code: 'COLUMN_MISMATCH' });
 });
 
+test('explicit empty column membership cannot contradict has_column', () => {
+  const ordinary = { ...prepared, column: undefined };
+  for (const column of [[], null, undefined, '']) {
+    assert.throws(() => publishedArticle({ ...published(), column, has_column: true }, ordinary), { code: 'EDITOR_METADATA_INVALID' });
+  }
+  for (const has_column of [false, undefined]) {
+    assert.deepEqual(publishedArticle({ ...published(), column: [], has_column }, ordinary).columns, []);
+  }
+  assert.deepEqual(publishedArticle({ ...published(), has_column: true }, prepared).columns, [prepared.column.id]);
+});
+
 test('new drafts may omit unset column and creation statement without weakening published checks', () => {
   const data = { ...metadata(), state: 'draft' };
   delete data.column; delete data.creationStatement;
