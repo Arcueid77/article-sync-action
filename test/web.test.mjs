@@ -101,4 +101,3 @@ test('unknown editor metadata, ownership, columns and unsafe identifiers cannot 
     [{ image_url: 'https://external.invalid/image.png' }, 'EDITOR_METADATA_INVALID'],
   ]) assert.throws(() => editorMetadata({ ...metadata(), ...changes }, prepared), { code });
 });
-

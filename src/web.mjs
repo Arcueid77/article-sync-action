@@ -43,4 +43,3 @@ export function publishedArticle(data, prepared, { legacyNoDeclaration = false }
   }, prepared);
   return { title: data.title, html: data.content, ...settings, ...(omittedDeclaration ? { declarationReadSource: 'editor-confirmed-absence' } : {}), readSource: 'website-article', publishedUpdated: Number.isSafeInteger(data.updated) ? data.updated : null };
 }
-
