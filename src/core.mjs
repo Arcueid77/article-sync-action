@@ -58,6 +58,7 @@ export async function loadArticles(sourceRoot, config = {}) {
     if ((data.series === undefined) !== (data.seriesOrder === undefined)) fail('SOURCE_INVALID', `${name}: series and seriesOrder must be set together.`);
     if (data.draft !== undefined && typeof data.draft !== 'boolean') fail('SOURCE_INVALID', `${name}: draft must be boolean.`);
     if (data.zhihu !== undefined && typeof data.zhihu !== 'boolean') fail('SOURCE_INVALID', `${name}: zhihu must be boolean.`);
+    if (data.bilibili !== undefined && typeof data.bilibili !== 'boolean') fail('SOURCE_INVALID', `${name}: bilibili must be boolean.`);
     const slug = path.basename(name, '.md');
     if (!/^[a-z0-9][a-z0-9-]*$/.test(slug) || articles.has(slug)) fail('SOURCE_INVALID', 'Markdown filenames must have unique lowercase slugs across all directories.');
     articles.set(slug, { slug, data, body: match[2], raw, sourcePath, sourceHash: sha256(raw) });
@@ -113,12 +114,13 @@ function appendNavigation($, article, config, articles) {
 const allowedTags = new Set('p a img figure figcaption blockquote h2 h3 strong b em i del s ul ol li pre code hr br table thead tbody tfoot tr th td sup sub'.split(' '));
 const permittedAttributes = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'start']);
 
-export function renderArticle(article, config, articles, { allowNew = false, allowPendingLinks = false } = {}) {
+export function renderArticle(article, config, articles, { allowNew = false, allowPendingLinks = false, target } = {}) {
   const binding = config.articles[article.slug];
   if (!binding || (!binding.published && !allowNew)) fail('MAPPING_REQUIRED', 'A published mapping or an explicit new-article plan is required.');
   if (article.data.draft) fail('SOURCE_DRAFT', 'Draft articles are not synchronized.');
-  const title = displayTitle(article.data, config);
-  if ([...title].length > 100) fail('TITLE_TOO_LONG', 'Zhihu titles must fit in 100 characters; automatic truncation is disabled.');
+  const title = target?.title ?? displayTitle(article.data, config);
+  const titleLimit = target?.titleLimit ?? 100;
+  if ([...title].length > titleLimit) fail('TITLE_TOO_LONG', `Titles must fit in ${titleLimit} characters; automatic truncation is disabled.`);
   const md = new MarkdownIt({ html: true, linkify: false, typographer: false });
   const $ = load(md.render(article.body), null, false);
   const notices = [];
@@ -189,7 +191,7 @@ export function renderArticle(article, config, articles, { allowNew = false, all
   if (article.data.description && !(first.is('blockquote') && normalizeText(first.text()) === normalizeText(article.data.description))) {
     $.root().prepend(`<blockquote><p>${escapeHtml(article.data.description)}</p></blockquote>`);
   }
-  $('a').each((_, element) => $(element).attr('href', rewriteLink($(element).attr('href'), config, articles, { allowPendingLinks })));
+  $('a').each((_, element) => $(element).attr('href', (target?.rewriteLink ?? rewriteLink)($(element).attr('href'), config, articles, { allowPendingLinks })));
   const assets = [];
   $('img').each((index, element) => {
     const source = $(element).attr('src');
@@ -198,7 +200,7 @@ export function renderArticle(article, config, articles, { allowNew = false, all
     assets.push({ key, source, alt: $(element).attr('alt') ?? '' });
     $(element).attr('src', `https://asset.invalid/${key}`);
   });
-  appendNavigation($, article, config, articles);
+  (target?.appendNavigation ?? appendNavigation)($, article, config, articles);
   if (binding.sourceUrl) $.root().append(`<hr><p>原文：<a href="${escapeHtml(binding.sourceUrl)}">博客原文</a></p>`);
   return { slug: article.slug, id: binding.id, url: binding.id ? articleUrl(binding.id) : undefined, column: binding.column ? config.columns[binding.column] : undefined, authorUrlToken: config.authorUrlToken, title, html: $.html(), assets, notices, sourcePath: article.sourcePath, sourceHash: article.sourceHash };
 }
@@ -219,7 +221,7 @@ export function isZhihuImage(value) {
 }
 
 export function redactImageUrls(value) {
-  if (typeof value === 'string') return value.replace(/https:\/\/pic-private\.zhihu\.com\/[^\s"'<>\\]*/gi, url => url.split('?')[0]);
+  if (typeof value === 'string') return value.replace(/https:\/\/pic-private\.zhihu\.com\/[^\s"'<>\\]*/gi, url => url.split('?')[0]).replace(/https?:\/\/(?:[a-z0-9-]+\.)+(?:hdslb|biliimg)\.com\/[^\s"'<>\\]*/gi, url => url.split('?')[0]);
   if (Array.isArray(value)) return value.map(redactImageUrls);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactImageUrls(item)]));
   return value;

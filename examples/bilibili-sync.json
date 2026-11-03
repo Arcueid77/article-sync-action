@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "platform": "bilibili",
+  "blogUrl": "https://blog.example",
+  "authorMid": "12345",
+  "allowPublish": false,
+  "source": { "articlesDir": "posts", "publicDir": "public", "assetDirs": ["posts", "public"], "articlePath": "/blog/", "seriesPath": "/series/", "seriesTitle": "plain" },
+  "assetHosts": [],
+  "articles": { "hello-world": { "enabled": true, "published": false } },
+  "newArticles": { "enabled": false, "stateBranch": "dev/bilibili-sync-state", "stateFile": "bilibili-sync-state.json" }
+}

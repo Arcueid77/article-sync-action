@@ -1,12 +1,15 @@
 name: Article Sync
-description: Publish and update source-controlled Markdown articles on Zhihu, with format verification and persistent IDs.
+description: Synchronize Markdown articles with Playwright, format verification and persistent IDs.
 author: Arcueid77
 branding:
   icon: repeat
   color: blue
 inputs:
+  platform:
+    description: zhihu or bilibili. Zhihu remains the default.
+    default: zhihu
   mode:
-    description: plan (offline preview), verify, or apply (publish/update).
+    description: plan (offline preview), verify, apply (publish/update), or draft (Bilibili only).
     default: plan
   article:
     description: A Markdown filename slug, or all.
@@ -21,6 +24,8 @@ inputs:
     description: Optional full commit SHA that must match the source checkout.
   zhihu-storage-state:
     description: Dedicated Zhihu session JSON from an Actions Secret. Unused in plan mode.
+  bilibili-storage-state:
+    description: Dedicated Bilibili session JSON from an Actions Secret. Unused in plan mode.
   github-token:
     description: Token with contents write permission for the dedicated state branch. Unused in plan mode.
   upload-artifacts:
@@ -61,11 +66,13 @@ runs:
       env:
         ARTICLE_SYNC_ACTION_PATH: ${{ github.action_path }}
         SYNC_MODE: ${{ inputs.mode }}
+        SYNC_PLATFORM: ${{ inputs.platform }}
         SYNC_ARTICLE: ${{ inputs.article }}
         SYNC_SOURCE_ROOT: ${{ inputs.source-root }}
         SYNC_CONFIG: ${{ inputs.config }}
         SYNC_EXPECTED_SHA: ${{ inputs.expected-sha }}
         ZHIHU_STORAGE_STATE: ${{ inputs.mode != 'plan' && inputs.zhihu-storage-state || '' }}
+        BILIBILI_STORAGE_STATE: ${{ inputs.mode != 'plan' && inputs.bilibili-storage-state || '' }}
         GITHUB_TOKEN: ${{ inputs.mode != 'plan' && inputs.github-token || '' }}
       run: node "$ARTICLE_SYNC_ACTION_PATH/src/action.mjs"
     - name: Upload sanitized evidence

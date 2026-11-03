@@ -28,17 +28,20 @@ async function loadImageUrls(page, urls) {
   })))).every(Boolean), urls);
 }
 
-export async function readStorageState(file) {
+export async function readStorageState(file, platform = 'zhihu') {
+  if (!['zhihu', 'bilibili'].includes(platform)) fail('AUTH_STATE_INVALID', 'Unknown session platform.');
+  const domain = platform === 'bilibili' ? 'bilibili.com' : 'zhihu.com';
+  const permitted = host => host === domain || host.endsWith('.' + domain);
   let state;
   try { state = JSON.parse(await fs.readFile(file, 'utf8')); } catch { fail('AUTH_STATE_INVALID', 'The authentication state file is missing or invalid.'); }
   if (!Array.isArray(state.cookies) || !state.cookies.length || !Array.isArray(state.origins)) fail('AUTH_STATE_INVALID', 'The authentication state has no cookies.');
-  if (state.cookies.some(cookie => !/^\.?([a-z0-9-]+\.)*zhihu\.com$/i.test(cookie.domain ?? ''))) fail('AUTH_STATE_INVALID', 'Authentication state must contain only Zhihu cookies.');
-  if (state.origins.some(entry => { try { const u = new URL(entry.origin); return u.protocol !== 'https:' || !(u.hostname === 'zhihu.com' || u.hostname.endsWith('.zhihu.com')); } catch { return true; } })) fail('AUTH_STATE_INVALID', 'Authentication state must contain only Zhihu origins.');
+  if (state.cookies.some(cookie => !permitted(String(cookie.domain ?? '').replace(/^\./, '').toLowerCase()))) fail('AUTH_STATE_INVALID', 'Authentication state contains cookies from another platform.');
+  if (state.origins.some(entry => { try { const u = new URL(entry.origin); return u.protocol !== 'https:' || !permitted(u.hostname); } catch { return true; } })) fail('AUTH_STATE_INVALID', 'Authentication state contains origins from another platform.');
   return state;
 }
 
-export async function launchSession(stateFile, { headed = false } = {}) {
-  const storageState = await readStorageState(stateFile);
+export async function launchSession(stateFile, { headed = false, platform = 'zhihu' } = {}) {
+  const storageState = await readStorageState(stateFile, platform);
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ storageState, locale: 'zh-CN', timezoneId: 'Asia/Shanghai', viewport: { width: 1440, height: 1000 } });
   context.setDefaultTimeout(15_000);

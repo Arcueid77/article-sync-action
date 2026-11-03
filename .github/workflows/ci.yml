@@ -26,4 +26,12 @@ jobs:
         with:
           mode: plan
           source-root: examples
+      - name: Exercise the Bilibili offline entry point without credentials
+        uses: ./
+        with:
+          platform: bilibili
+          mode: plan
+          source-root: examples
+          config: bilibili-sync.json
+          upload-artifacts: 'false'
       - run: git diff --exit-code
