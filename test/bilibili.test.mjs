@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { validateBilibiliConfig, emptyBilibiliRegistry, validateBilibiliRegistry, effectiveBilibiliConfig, renderBilibiliArticle, bilibiliImageUrl, compareBilibiliArticle } from '../src/bilibili.mjs';
+import { validateBilibiliConfig, emptyBilibiliRegistry, validateBilibiliRegistry, effectiveBilibiliConfig, renderBilibiliArticle, bilibiliImageUrl, bilibiliClipboardHtml, compareBilibiliArticle, normalizeBilibiliHtml } from '../src/bilibili.mjs';
 import { synchronizeBilibili, bilibiliContentHash } from '../src/bilibili-sync.mjs';
-import { exactJson, allocatedId } from '../src/bilibili-browser.mjs';
+import { exactJson, allocatedId, bilibiliInventory, BilibiliEditor } from '../src/bilibili-browser.mjs';
 import { readStorageState } from '../src/browser.mjs';
 import { redactImageUrls } from '../src/core.mjs';
 import { actionInputs } from '../src/action.mjs';
@@ -47,6 +47,47 @@ test('large IDs never pass through imprecise JSON numbers', () => {
   const data = exactJson('{"code":0,"data":{"id":1234567890123456789},"note":"1234567890123456789"}');
   assert.equal(allocatedId(data), '1234567890123456789'); assert.equal(data.note, '1234567890123456789');
   assert.equal(allocatedId({ code: 0, data: { id: 1234567890123456789 } }), null);
+  assert.equal(allocatedId(exactJson('{"code":0,"data":{"article_id":1234567890123456789}}')), '1234567890123456789');
+});
+
+test('native clipboard images retain uploaded identity and explicit captions', () => {
+  const url = 'https://i0.hdslb.com/bfs/new_dyn/abcd.png';
+  const source = `<figure><img src="${url}" alt="图"><figcaption>图注 &amp; 文字</figcaption></figure>`;
+  const clipboard = bilibiliClipboardHtml(source);
+  assert.match(clipboard, /data-eva-image="enhanced"/);
+  assert.match(clipboard, /data-url="https:\/\/i0\.hdslb\.com\/bfs\/new_dyn\/abcd\.png"/);
+  assert.doesNotMatch(clipboard, /figcaption/);
+  assert.equal(compareBilibiliArticle({ title: '图', html: source }, { title: '图', html: clipboard }).ok, true);
+  assert.match(bilibiliClipboardHtml(`<img src="${url}" alt="仅替代文字">`), /alt="\[图片\]"/);
+  for (const caption of ['长'.repeat(101), '😀'.repeat(51), '<strong>格式</strong>']) {
+    assert.throws(() => bilibiliClipboardHtml(`<figure><img src="${url}"><figcaption>${caption}</figcaption></figure>`), { code: 'UNSUPPORTED_CAPTION_FORMAT' });
+  }
+  assert.throws(() => bilibiliClipboardHtml('<img src="https://asset.invalid/asset-0">'), { code: 'ASSET_NOT_UPLOADED' });
+});
+
+test('actual website inventories require complete pagination metadata', () => {
+  assert.deepEqual(bilibiliInventory({ code: 0, artlist: { articles: [], page: { total: 0 } } }, 'article'), { articles: [], total: 0 });
+  assert.deepEqual(bilibiliInventory({ code: 0, artlist: null }, 'draft'), { articles: [], total: 0 });
+  assert.deepEqual(bilibiliInventory({ code: 0, artlist: { drafts: [{ id: 42 }], page: { total: 1 } } }, 'draft'), { articles: [{ id: 42 }], total: 1 });
+  for (const data of [{ code: 0, artlist: null }, { code: 0, artlist: { articles: [] } }, { code: -101, artlist: { articles: [], page: { total: 0 } } }]) {
+    assert.throws(() => bilibiliInventory(data, 'article'), { code: 'ARTICLE_LIST_UNCONFIRMED' });
+  }
+});
+
+test('native editor decoration is ignored while authored content and actual images remain checked', () => {
+  const html = '<p><code>call()</code></p><pre><code>one\n  two</code></pre>';
+  const actual = '<p><span style="background: linear-gradient(transparent 50%, var(--Ga1) 50%);">call()</span><img class="ProseMirror-separator"></p><pre><span class="eva3-code-block-line-number">1\n2</span><code>one\n  two</code></pre>';
+  assert.equal(compareBilibiliArticle({ title: '代码', html }, { title: '代码', html: actual }).ok, true);
+  assert.equal(bilibiliContentHash({ title: '代码', html }), bilibiliContentHash({ title: '代码', html: actual }));
+  const realImage = '<img class="ProseMirror-separator" src="https://i0.hdslb.com/bfs/new_dyn/abcd.png">';
+  assert.match(normalizeBilibiliHtml(realImage), /abcd\.png/);
+  assert.equal(compareBilibiliArticle({ title: '代码', html }, { title: '代码', html: actual + realImage }).ok, false);
+  assert.equal(compareBilibiliArticle({ title: '代码', html }, { title: '代码', html: actual.replace('call()', 'lost()') }).ok, false);
+});
+
+test('a modern draft ID alone never becomes an invented public URL', async () => {
+  const editor = new BilibiliEditor({ async newPage() { throw new Error('No public URL was confirmed'); } });
+  assert.equal(await editor.readPublished({ id: '386062' }, '12345'), null);
 });
 
 test('Bilibili image signatures never survive JSON or HTML report redaction', () => {

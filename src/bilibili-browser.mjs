@@ -1,18 +1,31 @@
 import path from 'node:path';
-import { fail, writeJson } from './core.mjs';
-import { bilibiliImageUrl, compareBilibiliArticle, decimalId, materializeBilibiliImages, publicBilibiliUrl } from './bilibili.mjs';
+import { describeHtml, escapeHtml, fail, normalizeText, writeJson } from './core.mjs';
+import { bilibiliClipboardHtml, bilibiliImageUrl, compareBilibiliArticle, decimalId, materializeBilibiliImages, publicBilibiliUrl } from './bilibili.mjs';
 
 export function exactJson(text) {
   return JSON.parse(text.replace(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, token => /^-?\d+$/.test(token) && !Number.isSafeInteger(Number(token)) ? JSON.stringify(token) : token));
 }
 export function allocatedId(data) {
-  const value = data?.data?.aid ?? data?.data?.id;
+  const value = data?.data?.article_id ?? data?.data?.aid ?? data?.data?.id;
   const id = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
   return data?.code === 0 && decimalId(id) ? id : null;
 }
 
+const bodySelector = '.ql-editor[contenteditable="true"],.ProseMirror[contenteditable="true"],[contenteditable="true"][data-placeholder*="正文"]';
+const savePaths = new Set(['/x/article/creative/draft/addupdate', '/x/dynamic/feed/article/draft/add', '/draft-save']);
+
+export function bilibiliInventory(data, kind) {
+  if (data?.code !== 0) fail('ARTICLE_LIST_UNCONFIRMED', 'The article inventory request failed.');
+  if (kind === 'draft' && Object.hasOwn(data, 'artlist') && data.artlist === null) return { articles: [], total: 0 };
+  const list = data.artlist ?? data.data;
+  const articles = kind === 'draft' ? list?.drafts : list?.articles;
+  const total = list?.page?.total ?? list?.page?.count;
+  if (!Array.isArray(articles) || !Number.isSafeInteger(total) || total < 0) fail('ARTICLE_LIST_UNCONFIRMED', 'The owned article inventory is incomplete.');
+  return { articles, total };
+}
+
 export class BilibiliEditor {
-  constructor(context, { writerUrl = 'https://member.bilibili.com/platform/upload/text', accountUrl = 'https://api.bilibili.com/x/web-interface/nav', publicFor = id => `https://www.bilibili.com/read/cv${id}` } = {}) {
+  constructor(context, { writerUrl = 'https://member.bilibili.com/platform/upload/text', accountUrl = 'https://api.bilibili.com/x/web-interface/nav', publicFor } = {}) {
     this.context = context; this.writerUrl = writerUrl; this.accountUrl = accountUrl; this.publicFor = publicFor;
   }
   async assertAuthor(mid) {
@@ -32,9 +45,8 @@ export class BilibiliEditor {
       let response, data;
       try { response = await this.context.request.get(url.href, { timeout: 30_000 }); data = exactJson(await response.text()); } catch { fail('ARTICLE_LIST_UNCONFIRMED', 'Cannot confirm the owned article inventory.'); }
       if ([403, 412, 429].includes(response.status())) fail('WEBSITE_ACCESS_RESTRICTED', 'Bilibili refused the inventory request.');
-      const articles = kind === 'draft' ? data.data?.drafts : data.data?.articles;
-      const total = data.data?.page?.count;
-      if (!response.ok() || data.code !== 0 || !Array.isArray(articles) || !Number.isSafeInteger(total) || total < 0) fail('ARTICLE_LIST_UNCONFIRMED', 'The owned-article inventory format needs verification before allocating a draft.');
+      if (!response.ok()) fail('ARTICLE_LIST_UNCONFIRMED', 'The owned-article inventory request failed.');
+      const { articles, total } = bilibiliInventory(data, kind);
       if (articles.some(article => article.title === title)) fail('UNMAPPED_EXISTING_ARTICLE', 'An owned article already has this title. Bind its ID first.');
       found.push(...articles);
       if (found.length >= total) { complete = true; break; }
@@ -45,30 +57,58 @@ export class BilibiliEditor {
   }
   async controls(page) {
     if (/passport\.bilibili\.com/.test(page.url())) fail('AUTH_REQUIRED', 'Bilibili redirected to login.');
-    const title = page.locator('textarea[placeholder*="标题"],input[placeholder*="标题"]');
-    const body = page.locator('.ql-editor[contenteditable="true"],.ProseMirror[contenteditable="true"],[contenteditable="true"][data-placeholder*="正文"]');
+    let scope = page;
+    const modern = /\/platform\/upload\/text\/new-edit/.test(new URL(page.url()).pathname);
+    if (modern) {
+      const iframe = page.locator('iframe[src*="/york/read-editor"]');
+      await iframe.waitFor({ state: 'attached', timeout: 30_000 });
+      scope = await (await iframe.elementHandle()).contentFrame();
+      if (!scope) fail('EDITOR_UNSUPPORTED', 'The native editor frame is unavailable.');
+      await scope.waitForURL(/\/york\/read-editor/, { timeout: 30_000 });
+    }
+    const title = scope.locator('textarea[placeholder*="标题"],input[placeholder*="标题"]');
+    const body = scope.locator(bodySelector);
     await title.first().waitFor({ state: 'visible', timeout: 30_000 });
     await body.first().waitFor({ state: 'visible', timeout: 30_000 });
     if (await title.count() !== 1 || await body.count() !== 1) fail('EDITOR_UNSUPPORTED', 'The Bilibili editor layout is ambiguous.');
-    return { title, body };
+    return { title, body, scope, modern };
   }
   async open(id) {
     const page = await this.context.newPage();
     try {
       const u = new URL(this.writerUrl);
-      if (id) { u.pathname = u.pathname.replace(/\/$/, '') + '/edit'; u.searchParams.set('aid', id); }
+      const modern = u.hostname === 'member.bilibili.com';
+      let read;
+      if (modern) {
+        u.pathname = '/platform/upload/text/new-edit';
+        if (id) u.searchParams.set('aid', id);
+        if (id) read = page.waitForResponse(response => new URL(response.url()).pathname === '/x/dynamic/feed/article/draft/view', { timeout: 30_000 }).then(async response => ({ ok: response.ok(), data: exactJson(await response.text()) })).catch(() => null);
+      } else if (id) { u.pathname = u.pathname.replace(/\/$/, '') + '/edit'; u.searchParams.set('aid', id); }
       await page.goto(u.href, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-      return { page, ...await this.controls(page) };
+      const controls = { page, ...await this.controls(page) };
+      if (read) {
+        const saved = await read;
+        const draft = saved?.data?.data?.draft;
+        if (!saved?.ok || saved.data.code !== 0 || String(draft?.article_id) !== id || typeof draft.title !== 'string' || typeof draft.content !== 'string' || !draft.opus) fail('SAVED_DRAFT_UNCONFIRMED', 'Cannot confirm the requested server draft and rich content.');
+        await controls.scope.waitForFunction(({ title, prefix, selector }) => {
+          const field = document.querySelector('textarea[placeholder*="标题"]');
+          const body = document.querySelector(selector);
+          return field?.value === title && body && (!prefix || body.textContent.normalize('NFC').replace(/[\s\u200B-\u200D\uFEFF]/gu, '').includes(prefix));
+        }, { title: draft.title, prefix: normalizeText(draft.content).slice(0, 30), selector: bodySelector }, { timeout: 20_000 });
+        controls.nativeRead = { id, reader: 'bilibili-draft-view' };
+      }
+      return controls;
     } catch (error) { await page.close(); throw error; }
   }
   async save(page, expectedId) {
     const response = page.waitForResponse(value => {
       const u = new URL(value.url());
-      return value.request().method() === 'POST' && ['/x/article/creative/draft/addupdate', '/draft-save'].includes(u.pathname);
+      return value.request().method() === 'POST' && savePaths.has(u.pathname);
     }, { timeout: 45_000 }).then(async value => ({ ok: value.ok(), data: exactJson(await value.text()) }));
     // Attach the rejection handler before clicking; an uncertain save is never retried.
     const completion = response.catch(() => null);
-    const save = page.getByText(/^(?:存草稿|保存草稿)$/, { exact: true });
+    const { scope } = await this.controls(page);
+    const save = scope.getByText(/^(?:存草稿|保存草稿|保存为草稿)$/, { exact: true });
     if (await save.count() !== 1) fail('EDITOR_UNSUPPORTED', 'A unique native draft-save control is required.');
     await save.click();
     const result = await completion;
@@ -82,7 +122,7 @@ export class BilibiliEditor {
     let observed;
     let pending = Promise.resolve();
     const capture = response => {
-      if (new URL(response.url()).pathname !== '/x/article/creative/draft/addupdate') return;
+      if (!savePaths.has(new URL(response.url()).pathname)) return;
       pending = pending.then(async () => {
         let id;
         try { id = allocatedId(exactJson(await response.text())); } catch { return; }
@@ -96,6 +136,9 @@ export class BilibiliEditor {
     try {
       // Native save allocates once. The caller has already persisted allocating.
       await controls.title.fill(prepared.title);
+      // The modern editor refuses an empty body, and may autosave as soon as
+      // text is inserted. Capture every allocation response before this step.
+      await this.replaceBody(controls, `<p>${escapeHtml(prepared.title)}</p>`);
       const id = await this.save(controls.page);
       await pending;
       if (observed && observed !== id) fail('CREATE_OUTCOME_UNKNOWN', 'The native save returned a different allocation ID.');
@@ -111,30 +154,72 @@ export class BilibiliEditor {
       image.addEventListener('load', done, { once: true }); image.addEventListener('error', done, { once: true });
     }))));
     const html = await controls.body.innerHTML();
-    const imagesLoaded = await controls.body.locator('img').evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0));
-    return { title: await controls.title.inputValue(), html, imagesLoaded };
+    const imagesLoaded = await controls.body.locator('img[src]').evaluateAll(images => images.every(image => image.complete && image.naturalWidth > 0));
+    return { title: await controls.title.inputValue(), html, imagesLoaded, ...(controls.nativeRead ? { id: controls.nativeRead.id, readSource: controls.nativeRead.reader } : { readSource: 'editor-dom' }) };
   }
   async readDraft(id) {
     const controls = await this.open(id);
     try { return await this.snapshot(controls); } finally { await controls.page.close(); }
   }
   async upload(controls, asset) {
-    const images = controls.body.locator('img');
-    const before = new Set(await images.evaluateAll(values => values.map(value => value.src)));
-    let input = controls.page.locator('input[type="file"][accept*="image"]');
-    if (await input.count() !== 1) {
-      const imageButton = controls.page.getByRole('button', { name: /图片|上传图片/ });
-      if (await imageButton.count() !== 1) fail('IMAGE_UPLOAD_UNSUPPORTED', 'Cannot identify the native Bilibili image control.');
-      await imageButton.click();
-      input = controls.page.locator('input[type="file"][accept*="image"]');
+    const acknowledgement = controls.page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.request().method() === 'POST' && /upload|upcover/i.test(url.pathname) && [new URL(this.writerUrl).origin, 'https://api.bilibili.com', 'https://member.bilibili.com'].includes(url.origin) && response.headers()['content-type']?.includes('json');
+    }, { timeout: 60_000 }).then(async response => ({ ok: response.ok(), data: exactJson(await response.text()) })).catch(() => null);
+    const imageInput = 'input[type="file"][accept*="image"],input[type="file"][accept*=".png"],input[type="file"][accept*=".jpg"]';
+    let input = controls.scope.locator(imageInput);
+    const nativeImage = controls.scope.locator('eva3-toolbar-image');
+    if (await input.count() !== 1 && await nativeImage.count() === 1) {
+      const selected = controls.page.waitForEvent('filechooser', { timeout: 15_000 }).catch(() => null);
+      await nativeImage.click();
+      const chooser = await selected;
+      if (!chooser) fail('IMAGE_UPLOAD_UNSUPPORTED', 'The native image toolbar did not open a file picker.');
+      await chooser.setFiles(asset.file);
+    } else {
+      if (await input.count() !== 1) {
+        const imageButton = controls.scope.getByRole('button', { name: /图片|上传图片/ });
+        if (await imageButton.count() !== 1) fail('IMAGE_UPLOAD_UNSUPPORTED', 'Cannot identify the native Bilibili image control.');
+        await imageButton.click();
+        input = controls.scope.locator(imageInput);
+      }
+      if (await input.count() !== 1) fail('IMAGE_UPLOAD_UNSUPPORTED', 'Cannot identify a unique image file input.');
+      await input.setInputFiles(asset.file);
     }
-    if (await input.count() !== 1) fail('IMAGE_UPLOAD_UNSUPPORTED', 'Cannot identify a unique image file input.');
-    await input.setInputFiles(asset.file);
-    await controls.page.waitForFunction(({ previous, selector }) => [...(document.querySelector(selector)?.querySelectorAll('img') ?? [])].some(image => image.complete && image.naturalWidth > 0 && !previous.includes(image.src)), { previous: [...before], selector: '.ql-editor,.ProseMirror,[contenteditable][data-placeholder*="正文"]' }, { timeout: 60_000 });
-    const urls = await images.evaluateAll(values => values.map(value => value.src));
-    const url = urls.filter(value => !before.has(value)).map(bilibiliImageUrl).find(Boolean);
+    const receipt = await acknowledgement;
+    const url = receipt?.ok && receipt.data?.code === 0 ? bilibiliImageUrl(receipt.data.data?.image_url ?? receipt.data.data?.url) : null;
     if (!url) fail('ASSET_NOT_UPLOADED', 'Native upload did not produce a Bilibili CDN image.');
+    const loaded = await controls.scope.evaluate(url => new Promise(resolve => {
+      const image = new Image(); const timer = setTimeout(() => resolve(false), 20_000);
+      image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); };
+      image.onerror = () => { clearTimeout(timer); resolve(false); }; image.src = url;
+    }), url);
+    if (!loaded) fail('ASSET_NOT_UPLOADED', 'The uploaded Bilibili image is not publicly loadable.');
     return url;
+  }
+  async replaceBody(controls, html) {
+    await controls.page.bringToFront();
+    await this.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(controls.scope.url()).origin });
+    await controls.scope.evaluate(async html => {
+      const text = new DOMParser().parseFromString(html, 'text/html').body.textContent;
+      await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+    }, html);
+    try {
+      await controls.body.click();
+      await controls.body.press('ControlOrMeta+A');
+      await controls.body.press('Backspace');
+      await controls.body.click();
+      for (let quotes = await controls.body.locator('blockquote').count(); quotes; quotes = await controls.body.locator('blockquote').count()) {
+        await controls.body.press('ControlOrMeta+Home');
+        await controls.body.press('Backspace');
+        await controls.scope.waitForFunction(({ previous, selector }) => {
+          const body = document.querySelector(selector);
+          return body && body.querySelectorAll('blockquote').length < previous && !body.querySelector('img[src]') && !body.textContent.trim();
+        }, { previous: quotes, selector: bodySelector }, { timeout: 5000 });
+        await controls.body.click();
+      }
+      await controls.body.press('ControlOrMeta+V');
+      await controls.scope.waitForFunction(({ expected, selector }) => document.querySelector(selector)?.textContent.normalize('NFC').replace(/[\s\u200B-\u200D\uFEFF]/gu, '').includes(expected), { expected: describeHtml(html).text.slice(0, 30), selector: bodySelector }, { timeout: 15_000 });
+    } finally { await controls.scope.evaluate(() => navigator.clipboard.writeText('')).catch(() => {}); }
   }
   async writeDraft(prepared, assets, entry, onImage, outputDirectory) {
     const controls = await this.open(entry.id);
@@ -145,7 +230,7 @@ export class BilibiliEditor {
       for (const asset of assets) {
         let url = entry.images?.[asset.hash];
         if (url) {
-          const loaded = await controls.page.evaluate(url => new Promise(resolve => { const image = new Image(); const timer = setTimeout(() => resolve(false), 15_000); image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); }; image.onerror = () => { clearTimeout(timer); resolve(false); }; image.src = url; }), url);
+          const loaded = await controls.scope.evaluate(url => new Promise(resolve => { const image = new Image(); const timer = setTimeout(() => resolve(false), 15_000); image.onload = () => { clearTimeout(timer); resolve(image.naturalWidth > 0); }; image.onerror = () => { clearTimeout(timer); resolve(false); }; image.src = url; }), url);
           if (!loaded) url = null;
         }
         if (!url) { url = await this.upload(controls, asset); await onImage(asset.hash, url); }
@@ -153,24 +238,7 @@ export class BilibiliEditor {
       }
       const expected = { ...prepared, html: materializeBilibiliImages(prepared.html, uploaded) };
       await controls.title.fill(prepared.title);
-      await controls.body.click();
-      await controls.body.press('ControlOrMeta+A');
-      await controls.body.press('Backspace');
-      await controls.body.click();
-      for (let quotes = await controls.body.locator('blockquote').count(); quotes; quotes = await controls.body.locator('blockquote').count()) {
-        await controls.body.press('ControlOrMeta+Home');
-        await controls.body.press('Backspace');
-        await controls.page.waitForFunction(previous => {
-          const body = document.querySelector('.ql-editor,.ProseMirror,[contenteditable][data-placeholder*="正文"]');
-          return body && body.querySelectorAll('blockquote').length < previous && !body.querySelector('img') && !body.textContent.trim();
-        }, quotes, { timeout: 5000 });
-        await controls.body.click();
-      }
-      await controls.body.evaluate((element, html) => {
-        const data = new DataTransfer(); data.setData('text/html', html);
-        const doc = new DOMParser().parseFromString(html, 'text/html'); data.setData('text/plain', doc.body.innerText);
-        element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-      }, expected.html);
+      await this.replaceBody(controls, controls.modern ? bilibiliClipboardHtml(expected.html) : expected.html);
       const actualEditor = await this.snapshot(controls);
       await writeJson(path.join(outputDirectory, 'after-editor.json'), actualEditor);
       const validation = compareBilibiliArticle(expected, actualEditor);
@@ -186,9 +254,13 @@ export class BilibiliEditor {
     } finally { await controls.page.close(); }
   }
   async readPublished(entry, authorMid) {
+    // A modern draft article_id is not a public cv/opus identifier.
+    // Without an explicit website URL, retain pending state instead of guessing.
+    const target = entry.publicUrl ?? this.publicFor?.(entry.id);
+    if (!target) return null;
     const page = await this.context.newPage();
     try {
-      const response = await page.goto(entry.publicUrl ?? this.publicFor(entry.id), { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
       if (response?.status() === 404) return null;
       if (!response?.ok() || [403, 412, 429].includes(response.status())) fail('WEBSITE_ACCESS_RESTRICTED', 'Bilibili public article access was refused.');
       const url = page.url().split('?')[0];

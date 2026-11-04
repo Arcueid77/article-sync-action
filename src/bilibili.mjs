@@ -102,6 +102,12 @@ export function renderBilibiliArticle(article, config, articles) {
   const binding = config.articles[article.slug];
   const prepared = renderArticle(article, { ...config, columns: {}, richTableMode: 'rows' }, articles, { allowNew: true, allowPendingLinks: true, target: { title: binding?.title ?? displayTitle(article.data, config), titleLimit: 40, rewriteLink: rewriteBilibiliLink, appendNavigation: appendBilibiliNavigation } });
   const $ = load(prepared.html, null, false);
+  // The native editor has no inline-code mark. Its textStyle mark supports
+  // background colors, so retain an explicit visual code distinction there.
+  $('code').filter((_, code) => !$(code).closest('pre').length).each((_, code) => {
+    $(code).replaceWith(`<span style="background-color: rgb(241, 242, 243)">${escapeHtml($(code).text())}</span>`);
+  });
+  if ($('span[style]').length) prepared.notices.push('Inline code uses Bilibili-native gray background text; characters remain copyable.');
   $('table').each((_, table) => {
     const rows = $(table).find('tr').toArray();
     const header = $(rows[0]).children('th').toArray().map(cell => $(cell).html());
@@ -137,11 +143,39 @@ export function materializeBilibiliImages(html, images) {
   return $.html();
 }
 
+export function bilibiliClipboardHtml(html) {
+  const $ = load(html, null, false);
+  $('img').each((_, image) => {
+    const url = bilibiliImageUrl($(image).attr('src'));
+    if (!url) fail('ASSET_NOT_UPLOADED', 'Native clipboard images require a verified Bilibili CDN URL.');
+    const caption = $(image).closest('figure').children('figcaption');
+    if (caption.length > 1 || caption.children().length || caption.text().length > 100) fail('UNSUPPORTED_CAPTION_FORMAT', 'Native Bilibili captions must be plain text up to 100 characters.');
+    // Match the editor's own copy format. Plain HTML images are downloaded and
+    // uploaded again by its paste handler, changing their persistent identity.
+    $(image).attr({ src: url, 'data-url': url, 'data-eva-image': 'enhanced', 'data-caption': caption.text(), alt: caption.text() || '[图片]' });
+  });
+  $('figcaption').remove();
+  return $.html();
+}
+
 export function compareBilibiliArticle(expected, actual) {
-  const a = describeHtml(expected.html), b = describeHtml(actual.html);
+  const a = describeHtml(normalizeBilibiliHtml(expected.html)), b = describeHtml(normalizeBilibiliHtml(actual.html));
   const checks = { title: expected.title === actual.title };
   for (const key of ['text', 'headings', 'code', 'links', 'tables', 'subtitles', 'lists', 'formats']) checks[key] = JSON.stringify(a[key]) === JSON.stringify(b[key]);
   const images = value => value.map(bilibiliImageUrl);
   checks.images = b.images.every(value => bilibiliImageUrl(value)) && JSON.stringify(images(a.images)) === JSON.stringify(images(b.images)) && actual.imagesLoaded !== false;
   return { ok: Object.values(checks).every(Boolean), checks };
+}
+
+export function normalizeBilibiliHtml(html) {
+  const $ = load(html, null, false);
+  $('.eva3-code-block-line-number,svg.eva3-link-icon').remove();
+  $('.eva3-image-tools,.eva3-image-caption.is-placeholder,.eva3-image-caption[data-empty="true"]').remove();
+  $('.eva3-image-caption').each((_, caption) => $(caption).replaceWith(`<figcaption>${escapeHtml($(caption).text())}</figcaption>`));
+  $('img.ProseMirror-separator').filter((_, image) => !$(image).attr('src')).remove();
+  $('span[style]').each((_, span) => {
+    const style = $(span).attr('style');
+    if (/(?:^|;)\s*background(?:-color)?\s*:\s*(?:rgb\(\s*241\s*,\s*242\s*,\s*243\s*\)|#f1f2f3|linear-gradient\(\s*transparent\s+50%\s*,\s*var\(--Ga1\)\s+50%\s*\))\s*(?:;|$)/i.test(style)) $(span).replaceWith(`<code>${escapeHtml($(span).text())}</code>`);
+  });
+  return $.html();
 }

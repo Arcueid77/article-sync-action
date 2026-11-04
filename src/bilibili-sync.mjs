@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { describeHtml, sha256, writeJson, fail } from './core.mjs';
 import { publicSourceUrl } from './source.mjs';
-import { effectiveBilibiliConfig, renderBilibiliArticle, materializeBilibiliImages, compareBilibiliArticle, bilibiliImageUrl } from './bilibili.mjs';
+import { effectiveBilibiliConfig, renderBilibiliArticle, materializeBilibiliImages, compareBilibiliArticle, bilibiliImageUrl, normalizeBilibiliHtml } from './bilibili.mjs';
 
 export function bilibiliContentHash(article) {
-  const description = describeHtml(article.html);
+  const description = describeHtml(normalizeBilibiliHtml(article.html));
   description.images = description.images.map(bilibiliImageUrl);
   return sha256(JSON.stringify({ title: article.title, ...description }));
 }
