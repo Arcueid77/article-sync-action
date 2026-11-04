@@ -42,23 +42,23 @@ export function effectiveConfig(config, registry, articles) {
 }
 
 export class FileRegistry {
-  constructor(file, config) { this.file = file; this.config = config; }
+  constructor(file, config, { validate = validateRegistry, empty = emptyRegistry } = {}) { this.file = file; this.config = config; this.validate = validate; this.empty = empty; }
   async load() {
-    if (!this.file) return emptyRegistry(this.config);
+    if (!this.file) return this.empty(this.config);
     let raw;
-    try { raw = await fs.readFile(this.file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return emptyRegistry(this.config); throw error; }
-    try { return validateRegistry(JSON.parse(raw), this.config); } catch (error) { if (error.code) throw error; fail('REGISTRY_INVALID', 'The local registry is invalid.'); }
+    try { raw = await fs.readFile(this.file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return this.empty(this.config); throw error; }
+    try { return this.validate(JSON.parse(raw), this.config); } catch (error) { if (error.code) throw error; fail('REGISTRY_INVALID', 'The local registry is invalid.'); }
   }
   async save(registry) {
     if (!this.file) fail('REGISTRY_REQUIRED', 'New article creation needs persistent registry storage.');
-    await writeJson(this.file, validateRegistry(registry, this.config));
+    await writeJson(this.file, this.validate(registry, this.config));
   }
 }
 
 export class GitHubRegistry {
-  constructor(config, { repository, token, branch = config.newArticles?.stateBranch, fetchImpl = fetch } = {}) {
+  constructor(config, { repository, token, branch = config.newArticles?.stateBranch, fetchImpl = fetch, validate = validateRegistry, empty = emptyRegistry } = {}) {
     if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repository ?? '') || !token || !/^dev\/[a-z0-9-]+$/.test(branch ?? '')) fail('REGISTRY_REQUIRED', 'The trusted repository, token and dedicated state branch are required.');
-    this.config = config; this.repository = repository; this.token = token; this.branch = branch; this.fetch = fetchImpl;
+    this.config = config; this.repository = repository; this.token = token; this.branch = branch; this.fetch = fetchImpl; this.validate = validate; this.empty = empty;
     this.file = config.newArticles?.stateFile ?? 'article-sync-state.json';
     if (!/^[a-z][a-z0-9-]*\.json$/.test(this.file)) fail('CONFIG_INVALID', 'The state filename must be a plain JSON basename.');
     this.sha = null; this.branchExists = false;
@@ -79,16 +79,16 @@ export class GitHubRegistry {
   async load() {
     const ref = await this.request('GET', `/git/ref/heads/${this.branch}`, undefined, true);
     this.branchExists = Boolean(ref);
-    if (!ref) return emptyRegistry(this.config);
+    if (!ref) return this.empty(this.config);
     const file = await this.request('GET', `/contents/${this.file}?ref=${encodeURIComponent(this.branch)}`);
     if (file.type !== 'file' || file.encoding !== 'base64' || !/^[a-f0-9]{40}$/.test(file.sha) || typeof file.content !== 'string') fail('REGISTRY_INVALID', 'Registry file metadata is invalid.');
     this.sha = file.sha;
     let registry;
     try { registry = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8')); } catch { fail('REGISTRY_INVALID', 'Registry content is invalid.'); }
-    return validateRegistry(registry, this.config);
+    return this.validate(registry, this.config);
   }
   async save(registry) {
-    validateRegistry(registry, this.config);
+    this.validate(registry, this.config);
     if (!this.branchExists) {
       const repository = await this.request('GET', '');
       if (typeof repository.default_branch !== 'string' || !repository.default_branch) fail('REGISTRY_INVALID', 'The repository default branch is unavailable.');
@@ -97,7 +97,7 @@ export class GitHubRegistry {
       await this.request('POST', '/git/refs', { ref: `refs/heads/${this.branch}`, sha: main.object.sha });
       this.branchExists = true;
     }
-    const body = { message: 'chore(zhihu): persist article publication state', branch: this.branch, content: Buffer.from(JSON.stringify(registry, null, 2) + '\n').toString('base64') };
+    const body = { message: `chore(${this.config.platform ?? 'zhihu'}): persist article publication state`, branch: this.branch, content: Buffer.from(JSON.stringify(registry, null, 2) + '\n').toString('base64') };
     if (this.sha) body.sha = this.sha;
     const result = await this.request('PUT', `/contents/${this.file}`, body);
     if (!/^[a-f0-9]{40}$/.test(result.content?.sha ?? '')) fail('REGISTRY_INVALID', 'Registry write was not acknowledged.');

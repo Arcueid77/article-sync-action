@@ -6,7 +6,11 @@
 
 Source-controlled article publishing and updates for GitHub Actions. The first adapter supports Zhihu. No local browser extension or runtime LLM is required.
 
-**当前范围：知乎，Ubuntu 24.04 GitHub 托管 Runner。** 使用 Node.js 22 和 Playwright；不调用知乎 CLI。公众号、B 站等适配器尚未实现。
+**已验证范围：知乎，Ubuntu 24.04 GitHub 托管 Runner。** 使用 Node.js 22 和 Playwright；不调用知乎 CLI。B 站适配处于实验验证阶段；公众号等适配器尚未实现。
+
+各平台统一采用 Playwright 和各自的专用网页会话。B 站不使用开放平台应用、`ATC_BASE` 或 OAuth 凭据。
+
+B 站的配置、草稿模式和验证边界见 [B 站适配说明](docs/bilibili.md)。首次只用 `draft`，公开发布默认关闭。
 
 ## 已有能力
 

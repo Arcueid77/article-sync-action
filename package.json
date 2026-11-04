@@ -11,7 +11,8 @@
     "test:browser": "node --test test/browser/*.test.mjs",
     "plan": "node src/cli.mjs --mode plan",
     "sync": "node src/cli.mjs",
-    "auth": "node src/auth.mjs"
+    "auth": "node src/auth.mjs",
+    "auth:bilibili": "node src/bilibili-login.mjs"
   },
   "dependencies": {
     "cheerio": "1.2.0",

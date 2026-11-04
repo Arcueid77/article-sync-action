@@ -6,8 +6,10 @@ import { spawn } from 'node:child_process';
 import { fail } from './errors.mjs';
 
 export function actionInputs(env = process.env) {
+  const platform = env.SYNC_PLATFORM || 'zhihu';
+  if (!['zhihu', 'bilibili'].includes(platform)) fail('ARGUMENT_INVALID', 'Unsupported synchronization platform.');
   const mode = env.SYNC_MODE || 'plan';
-  if (!['plan', 'verify', 'apply'].includes(mode)) fail('ARGUMENT_INVALID', 'Unsupported synchronization mode.');
+  if (!['plan', 'verify', 'apply', ...(platform === 'bilibili' ? ['draft'] : [])].includes(mode)) fail('ARGUMENT_INVALID', 'Unsupported synchronization mode.');
   const article = env.SYNC_ARTICLE || 'all';
   if (article !== 'all' && !/^[a-z0-9][a-z0-9-]*$/.test(article)) fail('ARGUMENT_INVALID', 'Invalid article selection.');
   const sourceRoot = path.resolve(env.GITHUB_WORKSPACE || process.cwd(), env.SYNC_SOURCE_ROOT || '.');
@@ -15,7 +17,7 @@ export function actionInputs(env = process.env) {
   if ([sourceRoot, config].some(value => /[\r\n\0]/.test(value))) fail('ARGUMENT_INVALID', 'Invalid path.');
   const expectedSha = env.SYNC_EXPECTED_SHA || '';
   if (expectedSha && !/^[a-f0-9]{40}$/.test(expectedSha)) fail('ARGUMENT_INVALID', 'expected-sha must be a full commit SHA.');
-  return { mode, article, sourceRoot, config, expectedSha };
+  return { platform, mode, article, sourceRoot, config, expectedSha };
 }
 
 export function assertTrustedEvent(env, event, mode) {
@@ -55,15 +57,19 @@ export async function runAction(env = process.env) {
       return 0;
     }
     if (inputs.mode !== 'plan') {
-      if (!env.ZHIHU_STORAGE_STATE) fail('AUTH_REQUIRED', 'ZHIHU_STORAGE_STATE is required for verify and apply.');
+      const secret = env[inputs.platform === 'bilibili' ? 'BILIBILI_STORAGE_STATE' : 'ZHIHU_STORAGE_STATE'];
+      if (!secret) fail('AUTH_REQUIRED', 'The selected platform storage state is required for online modes.');
       await fs.mkdir(path.dirname(stateFile), { mode: 0o700 });
-      await fs.writeFile(stateFile, env.ZHIHU_STORAGE_STATE, { mode: 0o600 });
+      await fs.writeFile(stateFile, secret, { mode: 0o600 });
     }
-    const args = [fileURLToPath(new URL('./cli.mjs', import.meta.url)), '--mode', inputs.mode, '--article', inputs.article, '--source-root', inputs.sourceRoot, '--config', inputs.config, '--output', output, '--cache', path.join(directory, 'images.json')];
+    const args = [fileURLToPath(new URL(inputs.platform === 'bilibili' ? './bilibili-cli.mjs' : './cli.mjs', import.meta.url)), '--mode', inputs.mode, '--article', inputs.article, '--source-root', inputs.sourceRoot, '--config', inputs.config, '--output', output, '--cache', path.join(directory, 'images.json')];
     if (inputs.expectedSha) args.push('--expected-sha', inputs.expectedSha);
     if (inputs.mode !== 'plan') args.push('--state-file', stateFile);
     const childEnv = { ...env };
     delete childEnv.ZHIHU_STORAGE_STATE;
+    delete childEnv.BILIBILI_STORAGE_STATE;
+    delete childEnv.ZHIHU_STORAGE_STATE_FILE;
+    delete childEnv.BILIBILI_STORAGE_STATE_FILE;
     // plan must never use an inherited publication token or session.
     if (inputs.mode === 'plan') { delete childEnv.GITHUB_TOKEN; delete childEnv.ZHIHU_STORAGE_STATE_FILE; }
     return await new Promise((resolve, reject) => {
